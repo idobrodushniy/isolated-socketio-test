@@ -1,0 +1,125 @@
+diff --git a/main.py b/main.py
+index 407328e..9c70f60 100644
+--- a/main.py
++++ b/main.py
+@@ -1,6 +1,120 @@
++import engineio.exceptions as exceptions
++import engineio.packet as packet
++import engineio.socket
+ import eventlet
+ import socketio
+ 
++
++class CustomSocket(engineio.socket.Socket):
++    def _websocket_handler(self, ws):
++        """This method is copy-pasted with a patch."""
++        print("Patched version called.")
++
++        def websocket_wait():
++            data = ws.wait()
++            if data and len(data) > self.server.max_http_buffer_size:
++                raise ValueError('packet is too large')
++            return data
++
++        # try to set a socket timeout matching the configured ping interval
++        # and timeout
++        for attr in ['_sock', 'socket']:  # pragma: no cover
++            if hasattr(ws, attr) and hasattr(getattr(ws, attr), 'settimeout'):
++                getattr(ws, attr).settimeout(
++                    self.server.ping_interval + self.server.ping_timeout)
++
++        if self.connected:
++            # the socket was already connected, so this is an upgrade
++            self.upgrading = True  # hold packet sends during the upgrade
++
++            pkt = websocket_wait()
++            decoded_pkt = packet.Packet(encoded_packet=pkt)
++            if decoded_pkt.packet_type != packet.PING or \
++                    decoded_pkt.data != 'probe':
++                self.server.logger.info(
++                    '%s: Failed websocket upgrade, no PING packet', self.sid)
++                self.upgrading = False
++                return []
++            ws.send(packet.Packet(packet.PONG, data='probe').encode())
++            self.queue.put(packet.Packet(packet.NOOP))  # end poll
++
++            pkt = websocket_wait()
++            decoded_pkt = packet.Packet(encoded_packet=pkt)
++            if decoded_pkt.packet_type != packet.UPGRADE:
++                self.upgraded = False
++                self.server.logger.info(
++                    ('%s: Failed websocket upgrade, expected UPGRADE packet, '
++                     'received %s instead.'),
++                    self.sid, pkt)
++                self.upgrading = False
++                return []
++            self.upgraded = True
++            self.upgrading = False
++        else:
++            self.connected = True
++            self.upgraded = True
++
++        # start separate writer thread
++        def writer():
++            while True:
++                packets = None
++                try:
++                    packets = self.poll()
++                except exceptions.QueueEmpty:
++                    break
++                if not packets:
++                    # empty packet list returned -> connection closed
++                    break
++                try:
++                    for pkt in packets:
++                        ws.send(pkt.encode())
++                except:
++                    break
++            ws.close()
++
++        writer_task = self.server.start_background_task(writer)
++
++        self.server.logger.info(
++            '%s: Upgrade to websocket successful', self.sid)
++
++        while True:
++            p = None
++            try:
++                p = websocket_wait()
++            except Exception as e:
++                # if the socket is already closed, we can assume this is a
++                # downstream error of that
++                if not self.closed:  # pragma: no cover
++                    self.server.logger.info(
++                        '%s: Unexpected error "%s", closing connection',
++                        self.sid, str(e))
++                break
++            if p is None:
++                # connection closed by client
++                break
++            pkt = packet.Packet(encoded_packet=p)
++            try:
++                self.receive(pkt)
++            except exceptions.UnknownPacketError:  # pragma: no cover
++                pass
++            except exceptions.SocketIsClosedError:  # pragma: no cover
++                self.server.logger.info('Receive error -- socket is closed')
++                break
++            except:  # pragma: no cover
++                # if we get an unexpected exception we log the error and exit
++                # the connection properly
++                self.server.logger.exception('Unknown receive error')
++                break
++
++        self.queue.put(None)  # unlock the writer task so that it can exit
++        writer_task.join()
++        self.close(wait=False, abort=True)
++
++        return []
++
++
++engineio.socket.Socket = CustomSocket  # Patching socket.
++
+ eventlet.monkey_patch()
+ sio = socketio.Server(
+     logger=True,

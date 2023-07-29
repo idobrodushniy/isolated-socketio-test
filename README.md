@@ -15,7 +15,7 @@
 - Run the app `python3 main.py`
 
 
-## How reproduce?
+## How to reproduce?
 
 ### v 5.8.0
 - Use any tool for establishing socketio connection and sending messages. We used Postman or Insomnia.
@@ -24,7 +24,7 @@
 - Server should send you back the message `44{"message":"Connection rejected by server"}` 
 - Send several `40` messages in a row. Every time server returns `44{"message":"Connection rejected by server"}`.
 - Wait until server pings you with a message `2`. Don't reply with `3`. Continue sending a few `40`. Server should stop responding at some point, but connection will stay alive.
-- You can send infinite amount of `40` messages with no messages coming back and websocket connection will not disappear.
+- You can send infinite amount of `40` messages with no messages coming back and websocket connection will not disappear if you continue sending messages often.
 - Check the logs of socketio container. You will see
 ```
 Server initialized for eventlet.
@@ -67,6 +67,10 @@ Cannot send to sid 8UXe4Xb3X--Na8-RAAAA
 8UXe4Xb3X--Na8-RAAAA: Received packet MESSAGE data 0
 Cannot send to sid 8UXe4Xb3X--Na8-RAAAA
 ```
+
+### v 5.8.0 (with a patch)
+- Apply the diff to apply the patch -> `git apply tmp.diff`
+- Perform all the tests from the section above. The main difference is that after timeout on the server, websocket connection gonna be closed and KeyError will not appear.
 
 ### v 4.6.1
 - Use any tool for establishing socketio connection and sending messages. We used Postman or Insomnia.
